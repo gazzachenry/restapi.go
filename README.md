@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -23,20 +24,25 @@ type album struct {
 	Price  float64 `json:"price" bson:"price"`
 }
 
-var collection *mongo.Collection
+var (
+	collection  *mongo.Collection
+	redisClient *redis.Client
+	mongoClient *mongo.Client
+)
 
 func main() {
-	// Set client options
-	clientOptions := options.Client().ApplyURI("mongodb://root:example@localhost:27017/")
+	// Set MongoDB client options
+	mongoClientOptions := options.Client().ApplyURI("mongodb://root:example@localhost:27017/")
 
 	// Connect to MongoDB
-	client, err := mongo.Connect(context.TODO(), clientOptions)
+	var err error
+	mongoClient, err = mongo.Connect(context.TODO(), mongoClientOptions)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// Check the connection
-	err = client.Ping(context.TODO(), nil)
+	err = mongoClient.Ping(context.TODO(), nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -44,10 +50,30 @@ func main() {
 	fmt.Println("Connected to MongoDB!")
 
 	// Get the MongoDB collection
-	collection = client.Database("hen").Collection("albums")
+	collection = mongoClient.Database("hen").Collection("albums")
 	if collection == nil {
 		log.Fatal("Error getting collection")
 	}
+
+	// Set up Redis client
+	redisClient = redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+	defer redisClient.Close()
+
+	// Check Redis connection
+	_, err = redisClient.Ping(context.TODO()).Result()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("Connected to Redis!")
+
+	// Transfer data from MongoDB to Redis
+	err = transferData()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("Data transferred from MongoDB to Redis!")
 
 	router := gin.Default()
 
@@ -57,8 +83,38 @@ func main() {
 	router.GET("/albums/:id", getAlbumByID) // New route for GET by ID
 	router.PUT("/albums/:id", updateAlbum)  // New route for PUT
 	router.DELETE("/albums/:id", deleteAlbum)
+
 	// Run the Gin server
 	router.Run("localhost:8080")
+}
+
+// transferData retrieves albums from MongoDB and stores them in Redis
+func transferData() error {
+	// Find all albums in MongoDB
+	cursor, err := collection.Find(context.TODO(), bson.D{})
+	if err != nil {
+		return err
+	}
+	defer cursor.Close(context.TODO())
+
+	for cursor.Next(context.TODO()) {
+		var alb album
+		if err := cursor.Decode(&alb); err != nil {
+			return err
+		}
+
+		// Store album in Redis
+		err := redisClient.Set(context.TODO(), fmt.Sprintf("album:%d", alb.ID), alb.Title, 0).Err()
+		if err != nil {
+			return err
+		}
+	}
+
+	if err := cursor.Err(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // postAlbums adds an album from JSON received in the request body to MongoDB.

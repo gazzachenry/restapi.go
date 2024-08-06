@@ -1,9 +1,8 @@
-# restapi.go
-
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -103,8 +102,14 @@ func transferData() error {
 			return err
 		}
 
-		// Store album in Redis
-		err := redisClient.Set(context.TODO(), fmt.Sprintf("album:%d", alb.ID), alb.Title, 0).Err()
+		// Serialize album to JSON
+		albJSON, err := json.Marshal(alb)
+		if err != nil {
+			return err
+		}
+
+		// Store album in Redis as JSON
+		err = redisClient.Set(context.TODO(), fmt.Sprintf("album:%d", alb.ID), albJSON, 0).Err()
 		if err != nil {
 			return err
 		}
